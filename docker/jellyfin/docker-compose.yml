@@ -1,0 +1,18 @@
+services:
+  jellyfin:
+    image: lscr.io/linuxserver/jellyfin:latest
+    container_name: jellyfin
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Belgrade
+    restart: unless-stopped
+    volumes:
+      - ./config:/config
+      - /home/test/media:/media
+    networks:
+      - proxy-tier
+
+networks:
+  proxy-tier:
+    external: true
