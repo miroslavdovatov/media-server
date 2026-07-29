@@ -1,11 +1,9 @@
-# Ignore all container state, config, and database folders
-**/config/
-**/data/
-**/letsencrypt/
-
-# Ignore secret files
 .env
-
-# Ignore archives or logs
 *.tar.gz
 *.log
+
+docker/jellyfin/config/
+docker/npm/data/
+docker/npm/letsencrypt/
+docker/monitoring/uptime-kuma/
+docker/monitoring/netdata/
