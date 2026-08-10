@@ -1,0 +1,135 @@
+---
+- name: Media Server Disaster Recovery Build
+  hosts: test_server
+  become: yes
+
+  vars:
+    github_token: "{{ lookup('env', 'GH_TOKEN') }}"
+
+  tasks:
+    - name: Update apt and install required packages
+      apt:
+        name:
+          - docker.io
+          - docker-compose-v2
+          - git
+          - curl
+          - unzip
+        state: present
+        update_cache: yes
+
+    - name: Install Rclone (Official Script)
+      shell: curl -fsSL https://rclone.org/install.sh | sudo bash
+      args:
+        creates: /usr/bin/rclone
+
+    - name: Install Tailscale
+      shell: curl -fsSL https://tailscale.com/install.sh | sh
+      args:
+        creates: /usr/bin/tailscale
+
+    - name: Clone private media-server repo from GitHub
+      git:
+        repo: 'https://{{ github_token }}@github.com/miroslavdovatov/media-server.git'
+        dest: /home/test/media-server
+        version: main
+        force: yes
+      become: no
+
+    - name: Create rclone config directory for root
+      file:
+        path: /root/.config/rclone
+        state: directory
+
+    - name: Create rclone config directory for test user
+      file:
+        path: /home/test/.config/rclone
+        state: directory
+        owner: test
+
+    - name: Copy rclone config to root
+      copy:
+        src: ./rclone.conf
+        dest: /root/.config/rclone/rclone.conf
+
+    - name: Copy rclone config to test user
+      copy:
+        src: ./rclone.conf
+        dest: /home/test/.config/rclone/rclone.conf
+        owner: test
+
+    - name: Find the latest backup file on Google Drive
+      shell: "rclone lsf gdrive-encrypted: | sort | tail -n 1"
+      register: latest_backup
+      become: no
+
+    - name: Download the latest backup tarball
+      shell: rclone copy "gdrive-encrypted:{{ latest_backup.stdout }}" /tmp/
+      become: no
+
+    - name: Ensure the tailscale directory exists
+      file:
+        path: /var/lib/tailscale
+        state: directory
+        mode: '0700'
+      become: yes
+
+    - name: Ensure the docker directory exists
+      file:
+        path: /home/test/media-server/docker
+        state: directory
+        owner: test
+
+    - name: Create temporary restore folder
+      file:
+        path: /tmp/restore
+        state: directory
+
+    - name: Extract the backup into the temporary directory
+      shell: tar -xzf "/tmp/{{ latest_backup.stdout }}" -C /tmp/restore/
+      become: yes
+
+    - name: Restore Tailscale state file
+      copy:
+        src: /tmp/restore/tailscale/tailscaled.state
+        dest: /var/lib/tailscale/tailscaled.state
+        remote_src: yes
+        owner: root
+        group: root
+        mode: '0600'
+      become: yes
+
+    - name: Restore Docker configurations
+      command: cp -a /tmp/restore/docker/. /home/test/media-server/docker/
+      become: yes
+
+    - name: Clean up temporary restore folder
+      file:
+        path: /tmp/restore
+        state: absent
+
+    - name: Enable and start Tailscale service
+      systemd:
+        name: tailscaled
+        state: restarted
+        enabled: yes
+      become: yes
+
+    - name: Ensure external Docker network 'proxy-tier' exists
+      command: docker network create proxy-tier
+      register: proxy_net
+      failed_when:
+        - proxy_net.rc != 0
+        - "'already exists' not in proxy_net.stderr"
+      changed_when: proxy_net.rc == 0
+      become: yes
+
+    - name: Start the Docker stacks individually
+      shell: docker compose up -d --quiet-pull
+      args:
+        chdir: "/home/test/media-server/docker/{{ item }}"
+      loop:
+        - npm
+        - jellyfin
+        - monitoring
+      become: yes
